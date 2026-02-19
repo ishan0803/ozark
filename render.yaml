@@ -1,0 +1,122 @@
+##############################################################################
+# Render Blueprint — AML Network Analyzer (Ozark)
+#
+# Services:
+#   • ozark-db          – Managed PostgreSQL 16
+#   • ozark-redis       – Managed Redis 7
+#   • ozark-backend     – FastAPI web service (Docker)
+#   • ozark-worker      – Celery background worker (Docker)
+#   • ozark-frontend    – React/Vite static site
+#
+# HOW TO DEPLOY:
+#   1. Push this repo to GitHub/GitLab.
+#   2. On render.com → New → Blueprint → point to this repo.
+#   3. After services are created, set the following secret env vars
+#      in the Render dashboard (marked sync:false below):
+#        ozark-backend  → CLERK_SECRET_KEY, CLERK_ISSUER_URL, CLERK_JWKS_URL
+#        ozark-frontend → VITE_CLERK_PUBLISHABLE_KEY
+#   4. Also update CORS_ORIGINS on ozark-backend with the real frontend URL
+#      once you see it in the dashboard (e.g. https://ozark-frontend.onrender.com).
+##############################################################################
+
+databases:
+  - name: ozark-db
+    databaseName: aml_network
+    user: aml_user
+    plan: free          # upgrade to starter/standard for production
+
+services:
+  # ── Redis ────────────────────────────────────────────────────────────────
+  - type: redis
+    name: ozark-redis
+    plan: free
+    maxmemoryPolicy: noeviction
+    ipAllowList: []     # only internal Render traffic
+
+  # ── FastAPI Backend ──────────────────────────────────────────────────────
+  - type: web
+    name: ozark-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      # Render gives us a standard postgres:// URL.
+      # start.sh rewrites it to postgresql+asyncpg:// for SQLAlchemy async.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ozark-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: ozark-redis
+          property: connectionString
+      # ── Clerk (set in dashboard, never committed to source control) ──────
+      - key: CLERK_SECRET_KEY
+        sync: false
+      - key: CLERK_ISSUER_URL
+        sync: false
+      - key: CLERK_JWKS_URL
+        sync: false
+      # ── CORS ─────────────────────────────────────────────────────────────
+      # Update this after your first deploy once you know the frontend URL.
+      - key: CORS_ORIGINS
+        value: '["https://ozark-frontend.onrender.com"]'
+      - key: UPLOAD_DIR
+        value: /app/uploads
+
+  # ── Celery Worker ────────────────────────────────────────────────────────
+  - type: worker
+    name: ozark-worker
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    startCommand: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ozark-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: ozark-redis
+          property: connectionString
+      - key: CLERK_SECRET_KEY
+        sync: false
+      - key: CLERK_ISSUER_URL
+        sync: false
+      - key: CLERK_JWKS_URL
+        sync: false
+      - key: UPLOAD_DIR
+        value: /app/uploads
+
+  # ── React/Vite Frontend (Static Site) ───────────────────────────────────
+  - type: web
+    name: ozark-frontend
+    runtime: static
+    rootDir: money-mulling-frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    pullRequestPreviewsEnabled: true
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: no-cache
+    routes:
+      # SPA fallback — all routes resolve to index.html
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      # Set in Render dashboard (never commit to source control)
+      - key: VITE_CLERK_PUBLISHABLE_KEY
+        sync: false
+      # Render does not auto-inject inter-service URLs for static sites.
+      # Set this to your backend's URL after first deploy, e.g.:
+      #   https://ozark-backend.onrender.com
+      - key: VITE_API_URL
+        sync: false

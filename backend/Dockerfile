@@ -17,6 +17,13 @@ COPY . .
 # Create uploads directory
 RUN mkdir -p /app/uploads
 
+# Make startup script executable
+RUN chmod +x /app/start.sh
+
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use start.sh which handles:
+#   1. DATABASE_URL scheme conversion (postgres:// → postgresql+asyncpg://)
+#   2. Alembic migrations
+#   3. uvicorn startup (respects $PORT set by Render)
+CMD ["/app/start.sh"]

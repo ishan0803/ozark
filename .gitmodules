@@ -1,0 +1,3 @@
+[submodule "money-mulling-frontend"]
+	path = money-mulling-frontend
+	url = https://github.com/ishan0803/money-mulling-frontend.git

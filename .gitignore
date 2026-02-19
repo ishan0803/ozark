@@ -1,0 +1,22 @@
+# Root-level gitignore for the Ozark monorepo
+
+# ── Python / Backend ──────────────────────────────────────────
+backend/.env
+backend/.env.*
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# ── Node / Frontend ───────────────────────────────────────────
+money-mulling-frontend/.env
+money-mulling-frontend/.env.*
+money-mulling-frontend/node_modules/
+money-mulling-frontend/dist/
+
+# ── OS / Editor ───────────────────────────────────────────────
+.DS_Store
+*.suo
+*.idea/
+.vscode/
