@@ -67,32 +67,6 @@ services:
       - key: UPLOAD_DIR
         value: /app/uploads
 
-  # ── Celery Worker ────────────────────────────────────────────────────────
-  - type: worker
-    name: ozark-worker
-    runtime: docker
-    dockerfilePath: ./backend/Dockerfile.worker
-    dockerContext: ./backend
-    plan: free
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: ozark-db
-          property: connectionString
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: ozark-redis
-          property: connectionString
-      - key: CLERK_SECRET_KEY
-        sync: false
-      - key: CLERK_ISSUER_URL
-        sync: false
-      - key: CLERK_JWKS_URL
-        sync: false
-      - key: UPLOAD_DIR
-        value: /app/uploads
-
   # ── React/Vite Frontend (Static Site) ───────────────────────────────────
   - type: web
     name: ozark-frontend
