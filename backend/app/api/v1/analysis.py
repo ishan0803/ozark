@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +30,9 @@ logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/analysis", tags=["Analysis"])
 
+# Thread pool for CPU-bound graph analysis (keeps uvicorn event loop free)
+_executor = ThreadPoolExecutor(max_workers=4)
+
 
 @router.post(
     "/start",
@@ -37,10 +42,11 @@ router = APIRouter(prefix="/analysis", tags=["Analysis"])
 )
 async def start_analysis(
     body: AnalysisStartRequest,
+    background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Kick off a Celery task to run the full graph analysis pipeline."""
+    """Kick off the graph analysis pipeline as a FastAPI background task."""
     result = await db.execute(
         select(Dataset)
         .join(User, Dataset.user_id == User.id)
@@ -66,12 +72,26 @@ async def start_analysis(
     dataset.status = "analyzing"
     await db.flush()
 
-    task = run_analysis_pipeline.delay(str(analysis.id), str(dataset.id))
-    analysis.celery_task_id = task.id
-    await db.flush()
+    analysis_id = str(analysis.id)
+    dataset_id = str(dataset.id)
 
-    logger.info("analysis_started", analysis_id=str(analysis.id), dataset_id=str(dataset.id), celery_task_id=task.id)
-    return AnalysisStartResponse(analysis_id=analysis.id, celery_task_id=task.id)
+    logger.info("analysis_started", analysis_id=analysis_id, dataset_id=dataset_id)
+
+    # Run the heavy computation in a separate thread so the event loop stays free
+    background_tasks.add_task(
+        _run_in_thread, run_analysis_pipeline, analysis_id, dataset_id
+    )
+
+    return AnalysisStartResponse(analysis_id=analysis.id)
+
+
+def _run_in_thread(fn, *args):
+    """Run a synchronous function in the thread pool executor."""
+    loop = asyncio.new_event_loop()
+    try:
+        fn(*args)
+    finally:
+        loop.close()
 
 
 @router.get(
@@ -91,7 +111,10 @@ async def get_analysis_status(
     )
     analysis = result.scalar_one_or_none()
     if not analysis:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis not found or access denied.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Analysis not found or access denied.",
+        )
     return AnalysisStatusResponse(
         analysis_id=analysis.id,
         status=analysis.status,
@@ -110,10 +133,6 @@ async def export_analysis(
     user_id: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Return the complete structured analysis output in the specified format:
-    { suspicious_accounts, fraud_rings, summary }
-    """
     result = await db.execute(
         select(AnalysisResult)
         .join(User, AnalysisResult.user_id == User.id)
@@ -124,7 +143,6 @@ async def export_analysis(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis not found or access denied.")
     if analysis.status != "completed":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Analysis not complete. Status: {analysis.status}")
-
     if not analysis.flags_json or not analysis.risk_json:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Structured data not available.")
 
@@ -135,10 +153,13 @@ async def export_analysis(
     risk_data = json.loads(analysis.risk_json)
     risk_df = pd.DataFrame(risk_data)
 
-    # Rebuild minimal graph for ring calculation
     G = nx.DiGraph()
-    # Add flagged nodes and cycle edges
-    all_flagged = set(flags.get("cycles", [])) | set(flags.get("fan_in", [])) | set(flags.get("fan_out", [])) | set(flags.get("shells", []))
+    all_flagged = (
+        set(flags.get("cycles", []))
+        | set(flags.get("fan_in", []))
+        | set(flags.get("fan_out", []))
+        | set(flags.get("shells", []))
+    )
     for node in all_flagged:
         G.add_node(node)
 
@@ -146,7 +167,6 @@ async def export_analysis(
     processing_time = stats_raw.get("processing_time_seconds", 0.0)
 
     structured = build_structured_output(G, flags, risk_df, processing_time)
-    # Override total_accounts_analyzed from stats
     structured["summary"]["total_accounts_analyzed"] = stats_raw.get("total_nodes", len(risk_data))
     return JSONResponse(content=structured)
 
@@ -224,7 +244,6 @@ async def delete_analysis(
     user_id: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete the AnalysisResult and cascade-delete its Dataset + Transactions."""
     result = await db.execute(
         select(AnalysisResult)
         .join(User, AnalysisResult.user_id == User.id)

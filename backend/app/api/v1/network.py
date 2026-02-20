@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.models.models import AnalysisResult, User
-from app.schemas.schemas import IsomorphismRequest, IsomorphismStartResponse
+from app.schemas.schemas import IsomorphismRequest, IsomorphismResultResponse
 from app.tasks.analysis_tasks import run_isomorphism_search
 
 logger = structlog.get_logger(__name__)
@@ -23,9 +25,9 @@ router = APIRouter(prefix="/network", tags=["Network"])
 
 @router.post(
     "/isomorphism",
-    response_model=IsomorphismStartResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    summary="Start a VF2 isomorphism search",
+    response_model=IsomorphismResultResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Run VF2 isomorphism search (synchronous, returns result directly)",
 )
 async def start_isomorphism(
     body: IsomorphismRequest,
@@ -33,10 +35,9 @@ async def start_isomorphism(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Dispatch a Celery task to find structural clones via VF2 isomorphism.
-    No size restrictions on the search.
+    Run the VF2 isomorphism search in a thread pool and return the result
+    immediately. No polling needed — this replaces the old Celery-based flow.
     """
-    # Verify analysis exists and belongs to user
     result = await db.execute(
         select(AnalysisResult)
         .join(User, AnalysisResult.user_id == User.id)
@@ -53,26 +54,23 @@ async def start_isomorphism(
             detail="Completed analysis not found or access denied.",
         )
 
-    # Dispatch isomorphism task
-    task = run_isomorphism_search.delay(
+    logger.info(
+        "isomorphism_dispatched",
+        analysis_id=str(analysis.id),
+        target_node=body.target_node,
+        hops=body.hops,
+    )
+
+    # Run the CPU-bound search in the thread pool (non-blocking)
+    iso_result = await run_in_threadpool(
+        run_isomorphism_search,
         str(analysis.id),
         str(analysis.dataset_id),
         body.target_node,
         body.hops,
     )
 
-    logger.info(
-        "isomorphism_dispatched",
-        analysis_id=str(analysis.id),
-        target_node=body.target_node,
-        hops=body.hops,
-        celery_task_id=task.id,
-    )
-
-    return IsomorphismStartResponse(
-        celery_task_id=task.id,
-        message=f"Isomorphism search started for node '{body.target_node}' with {body.hops} hop(s).",
-    )
+    return IsomorphismResultResponse(**iso_result)
 
 
 @router.get(

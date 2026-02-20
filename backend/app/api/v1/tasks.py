@@ -1,14 +1,24 @@
-"""Task status router — poll Celery task progress."""
+"""
+Task status router — kept for API compatibility.
+Celery has been removed; this endpoint now maps task_id → analysis DB status.
+
+The frontend should prefer GET /api/v1/analysis/{id}/status directly.
+This endpoint accepts the analysis_id as the "task_id" for backward compat.
+"""
 
 from __future__ import annotations
 
+import uuid
+
 import structlog
-from celery.result import AsyncResult
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user
+from app.core.database import get_db
+from app.models.models import AnalysisResult, User
 from app.schemas.schemas import TaskStatusResponse
-from app.tasks.celery_app import celery_app
 
 logger = structlog.get_logger(__name__)
 
@@ -18,26 +28,50 @@ router = APIRouter(prefix="/tasks", tags=["Tasks"])
 @router.get(
     "/{task_id}",
     response_model=TaskStatusResponse,
-    summary="Poll the status of a Celery task",
+    summary="Poll analysis status by analysis ID (Celery removed — uses DB status)",
 )
 async def get_task_status(
     task_id: str,
-    _user_id: str = Depends(get_current_user),
+    user_id: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """
-    Check the status of a background task (analysis pipeline or isomorphism search).
-    Returns PENDING, STARTED, SUCCESS, FAILURE, or RETRY.
+    Check the status of an analysis by its analysis_id.
+    Maps DB statuses to the previous Celery vocabulary:
+      pending  → PENDING
+      running  → STARTED
+      completed → SUCCESS
+      failed   → FAILURE
     """
-    result = AsyncResult(task_id, app=celery_app)
+    try:
+        analysis_uuid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="task_id must be a valid UUID (the analysis_id).",
+        )
 
-    response = TaskStatusResponse(
-        task_id=task_id,
-        status=result.status,
+    result = await db.execute(
+        select(AnalysisResult)
+        .join(User, AnalysisResult.user_id == User.id)
+        .where(AnalysisResult.id == analysis_uuid, User.clerk_id == user_id)
     )
+    analysis = result.scalar_one_or_none()
+    if not analysis:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Analysis not found or access denied.",
+        )
 
-    if result.successful():
-        response.result = result.result
-    elif result.failed():
-        response.error = str(result.result)
+    status_map = {
+        "pending": "PENDING",
+        "running": "STARTED",
+        "completed": "SUCCESS",
+        "failed": "FAILURE",
+    }
 
-    return response
+    return TaskStatusResponse(
+        task_id=task_id,
+        status=status_map.get(analysis.status, "PENDING"),
+        error=analysis.error_message if analysis.status == "failed" else None,
+    )

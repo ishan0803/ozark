@@ -40,7 +40,6 @@ class AnalysisStartRequest(BaseModel):
 
 class AnalysisStartResponse(BaseModel):
     analysis_id: UUID
-    celery_task_id: str
     message: str = "Analysis pipeline started."
 
 
@@ -85,11 +84,6 @@ class IsomorphismRequest(BaseModel):
     analysis_id: UUID
     target_node: str = Field(..., min_length=1, description="Node ID to find structural clones of")
     hops: int = Field(default=1, ge=1, description="Radius around target node")
-
-
-class IsomorphismStartResponse(BaseModel):
-    celery_task_id: str
-    message: str = "Isomorphism search started."
 
 
 class IsomorphismResultResponse(BaseModel):

@@ -41,9 +41,6 @@ class Settings(BaseSettings):
     def DATABASE_URL_SYNC(self) -> str:
         return self.DATABASE_URL.replace("+asyncpg", "")
 
-    # ── Redis / Celery ────────────────────────────────────────
-    REDIS_URL: str = "redis://localhost:6379/0"
-
     # ── Clerk Authentication ──────────────────────────────────
     CLERK_SECRET_KEY: str = ""
     CLERK_ISSUER_URL: str = ""
