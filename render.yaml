@@ -48,7 +48,7 @@ services:
       # ── CORS ─────────────────────────────────────────────────────────────
       # Update this after your first deploy once you know the frontend URL.
       - key: CORS_ORIGINS
-        value: '["https://ozark-frontend.onrender.com"]'
+        value: '["https://ozark-frontend-apzu.onrender.com"]'
       - key: UPLOAD_DIR
         value: /app/uploads
 
