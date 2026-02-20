@@ -73,6 +73,5 @@ services:
       # Set in Render dashboard (never commit to source control)
       - key: VITE_CLERK_PUBLISHABLE_KEY
         sync: false
-      # Set this to your backend URL, e.g. https://ozark-backend.onrender.com
       - key: VITE_API_URL
-        sync: false
+        value: "https://ozark-backend.onrender.com"
