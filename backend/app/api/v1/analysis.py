@@ -24,7 +24,6 @@ from app.schemas.schemas import (
     AnalysisStatusResponse,
 )
 from app.tasks.analysis_tasks import run_analysis_pipeline
-from app.services.graph_service import build_structured_output, flags_from_json
 
 logger = structlog.get_logger(__name__)
 
@@ -133,6 +132,18 @@ async def export_analysis(
     user_id: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Return the pre-computed structured output that was stored in stats_json
+    during the analysis pipeline. This avoids re-running build_structured_output
+    on an edge-less graph which would produce empty fraud_rings.
+
+    Output format:
+    {
+        "suspicious_accounts": [...],
+        "fraud_rings": [...],
+        "summary": { "total_accounts_analyzed": N, ... }
+    }
+    """
     result = await db.execute(
         select(AnalysisResult)
         .join(User, AnalysisResult.user_id == User.id)
@@ -143,31 +154,26 @@ async def export_analysis(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis not found or access denied.")
     if analysis.status != "completed":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Analysis not complete. Status: {analysis.status}")
-    if not analysis.flags_json or not analysis.risk_json:
+    if not analysis.stats_json:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Structured data not available.")
 
-    import networkx as nx
-    import pandas as pd
+    stats_raw = json.loads(analysis.stats_json)
 
-    flags = flags_from_json(analysis.flags_json)
-    risk_data = json.loads(analysis.risk_json)
-    risk_df = pd.DataFrame(risk_data)
+    # stats_json is written by run_analysis_pipeline as:
+    #   { total_nodes, total_edges, ..., **build_structured_output(...) }
+    # so suspicious_accounts, fraud_rings, and summary are already there,
+    # computed against the FULL graph with all edges intact.
+    structured = {
+        "suspicious_accounts": stats_raw.get("suspicious_accounts", []),
+        "fraud_rings": stats_raw.get("fraud_rings", []),
+        "summary": stats_raw.get("summary", {
+            "total_accounts_analyzed": stats_raw.get("total_nodes", 0),
+            "suspicious_accounts_flagged": 0,
+            "fraud_rings_detected": 0,
+            "processing_time_seconds": 0.0,
+        }),
+    }
 
-    G = nx.DiGraph()
-    all_flagged = (
-        set(flags.get("cycles", []))
-        | set(flags.get("fan_in", []))
-        | set(flags.get("fan_out", []))
-        | set(flags.get("shells", []))
-    )
-    for node in all_flagged:
-        G.add_node(node)
-
-    stats_raw = json.loads(analysis.stats_json) if analysis.stats_json else {}
-    processing_time = stats_raw.get("processing_time_seconds", 0.0)
-
-    structured = build_structured_output(G, flags, risk_df, processing_time)
-    structured["summary"]["total_accounts_analyzed"] = stats_raw.get("total_nodes", len(risk_data))
     return JSONResponse(content=structured)
 
 
