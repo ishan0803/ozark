@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import List
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,7 +21,22 @@ class Settings(BaseSettings):
     # ── Database ──────────────────────────────────────────────
     DATABASE_URL: str = "postgresql+asyncpg://aml_user:aml_secret_2024@localhost:5432/aml_network"
 
-    # Synchronous URL for Alembic / Celery (replaces asyncpg with psycopg2)
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def fix_database_url_scheme(cls, v: str) -> str:
+        """
+        Render's managed PostgreSQL injects a standard postgres:// or
+        postgresql:// URL. SQLAlchemy's async engine (asyncpg) requires
+        the postgresql+asyncpg:// scheme. This validator fixes it automatically
+        so no startup script is needed.
+        """
+        if v.startswith("postgres://"):
+            return v.replace("postgres://", "postgresql+asyncpg://", 1)
+        if v.startswith("postgresql://"):
+            return v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
+
+    # Synchronous URL for Alembic (replaces +asyncpg with nothing → psycopg2)
     @property
     def DATABASE_URL_SYNC(self) -> str:
         return self.DATABASE_URL.replace("+asyncpg", "")

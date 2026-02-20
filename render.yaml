@@ -5,7 +5,6 @@
 #   • ozark-db          – Managed PostgreSQL 16
 #   • ozark-redis       – Managed Redis 7
 #   • ozark-backend     – FastAPI web service (Docker)
-#   • ozark-worker      – Celery background worker (Docker)
 #   • ozark-frontend    – React/Vite static site
 #
 # HOW TO DEPLOY:
@@ -41,9 +40,11 @@ services:
     dockerContext: ./backend
     plan: free
     healthCheckPath: /health
+    # Runs alembic migrations before each new deploy goes live.
+    preDeployCommand: alembic upgrade head
     envVars:
-      # Render gives us a standard postgres:// URL.
-      # start.sh rewrites it to postgresql+asyncpg:// for SQLAlchemy async.
+      # Render injects a standard postgres:// URL; config.py auto-upgrades
+      # the scheme to postgresql+asyncpg:// for SQLAlchemy's async engine.
       - key: DATABASE_URL
         fromDatabase:
           name: ozark-db
